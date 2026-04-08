@@ -119,6 +119,9 @@ async def root():
 @app.post("/api/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     """Upload PDF and create knowledge base"""
+    import traceback
+    print(f"Upload started: {file.filename}")
+    
     if not file.filename.endswith('.pdf'):
         raise HTTPException(400, "Only PDF files allowed")
     
@@ -131,8 +134,11 @@ async def upload_pdf(file: UploadFile = File(...)):
     
     # Extract text and create KB
     try:
+        print(f"Extracting text from: {file_path}")
         text = extract_text_from_pdf(file_path)
+        print(f"Extracted {len(text)} characters")
         chunks = chunk_text(text)
+        print(f"Created {len(chunks)} chunks")
         
         kb_data = {
             "name": kb_name,
@@ -142,6 +148,7 @@ async def upload_pdf(file: UploadFile = File(...)):
             "total_chunks": len(chunks)
         }
         save_kb(kb_name, kb_data)
+        print(f"KB saved: {kb_name}")
         
         return JSONResponse({
             "success": True,
@@ -151,9 +158,12 @@ async def upload_pdf(file: UploadFile = File(...)):
             "preview": text[:500] + "..." if len(text) > 500 else text
         })
     except Exception as e:
+        error_detail = traceback.format_exc()
+        print(f"ERROR: {error_detail}")
         return JSONResponse({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "detail": error_detail
         }, status_code=500)
 
 
