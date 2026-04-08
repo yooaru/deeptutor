@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Tutor - DeepTutor Learning</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📚 PDF Tutor</h1>
+            <p>Upload PDF materi → Belajar dengan AI Tutor</p>
+        </header>
+
+        <!-- Upload Section -->
+        <section class="upload-section">
+            <h2>Upload Materi</h2>
+            <div class="upload-box" id="uploadBox">
+                <input type="file" id="pdfInput" accept=".pdf" hidden>
+                <div class="upload-content">
+                    <span class="icon">📄</span>
+                    <p>Drop PDF here atau klik untuk upload</p>
+                </div>
+            </div>
+            <div id="uploadStatus"></div>
+        </section>
+
+        <!-- Knowledge Bases -->
+        <section class="kb-section">
+            <h2>Materi Tersedia</h2>
+            <div id="kbList" class="kb-list">
+                <p class="empty">Belum ada materi. Upload PDF dulu.</p>
+            </div>
+            <button onclick="loadKBs()" class="btn-refresh">🔄 Refresh</button>
+        </section>
+
+        <!-- Chat Section -->
+        <section class="chat-section" id="chatSection" style="display:none;">
+            <h2>💬 Belajar dengan <span id="activeKB">KB</span></h2>
+            
+            <div class="chat-controls">
+                <select id="capabilitySelect">
+                    <option value="chat">💬 Chat</option>
+                    <option value="deep_solve">🧮 Deep Solve</option>
+                    <option value="deep_research">🔍 Deep Research</option>
+                </select>
+                <button onclick="closeChat()" class="btn-close">✕ Tutup</button>
+            </div>
+
+            <div class="chat-messages" id="chatMessages"></div>
+            
+            <div class="chat-input">
+                <textarea id="messageInput" placeholder="Tanya apa saja tentang materi..."></textarea>
+                <button onclick="sendMessage()">Kirim</button>
+            </div>
+        </section>
+
+        <!-- Quiz Section -->
+        <section class="quiz-section" id="quizSection">
+            <h2>📝 Generate Quiz</h2>
+            <div class="quiz-form">
+                <input type="text" id="quizTopic" placeholder="Topik quiz (contoh: Fisika, Matematika, dll)">
+                <select id="quizKB">
+                    <option value="">Pilih materi...</option>
+                </select>
+                <input type="number" id="quizCount" value="5" min="1" max="20" placeholder="Jumlah soal">
+                <button onclick="generateQuiz()">Generate Quiz</button>
+            </div>
+            <div id="quizResult"></div>
+        </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
