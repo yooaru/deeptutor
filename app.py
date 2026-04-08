@@ -14,6 +14,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+try:
+    from pypdf import PdfReader
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
 import openai
 
 app = FastAPI(title="PDF Tutor Light", description="Upload PDF and chat with AI")
@@ -41,6 +47,21 @@ else:
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+def extract_text_from_pdf(pdf_path: Path) -> str:
+    """Extract text using pypdf (lightweight)"""
+    if not PDF_AVAILABLE:
+        return "[PDF text extraction not available]"
+    try:
+        reader = PdfReader(str(pdf_path))
+        text_parts = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                text_parts.append(text)
+        return "\n".join(text_parts)
+    except Exception as e:
+        return f"[Error extracting PDF: {str(e)}]"
+
 def get_kb_path(kb_name: str) -> Path:
     return KB_DIR / f"{kb_name}.json"
 
@@ -59,9 +80,16 @@ def save_kb(kb_name: str, data: dict):
 async def root():
     return FileResponse("static/index.html")
 
+def chunk_text(text: str, chunk_size: int = 1000) -> list:
+    """Simple text chunking"""
+    chunks = []
+    for i in range(0, len(text), chunk_size):
+        chunks.append(text[i:i+chunk_size])
+    return chunks
+
 @app.post("/api/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    """Upload PDF - light version, only metadata"""
+    """Upload PDF with text extraction"""
     if not file.filename.endswith('.pdf'):
         raise HTTPException(400, "Only PDF files allowed")
     
@@ -69,20 +97,30 @@ async def upload_pdf(file: UploadFile = File(...)):
     file_path = UPLOAD_DIR / f"{kb_name}.pdf"
     
     try:
-        # Save file (stream directly, no read into memory)
+        # Save file
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
         
-        # Get file size
         file_size = file_path.stat().st_size
         
-        # Save metadata only (no PDF text extraction)
+        # Extract text (limit to avoid OOM on huge PDFs)
+        text = ""
+        if file_size < 10 * 1024 * 1024:  # Only process PDFs < 10MB
+            text = extract_text_from_pdf(file_path)
+            # Limit text size
+            if len(text) > 50000:  # Max 50k chars
+                text = text[:50000] + "\n\n[Text truncated due to size limit]"
+        
+        chunks = chunk_text(text) if text else []
+        
         kb_data = {
             "name": kb_name,
             "filename": file.filename,
             "size_bytes": file_size,
             "size_mb": round(file_size / (1024*1024), 2),
-            "notes": "",
+            "text": text[:5000] if text else "",  # Preview only
+            "chunks": chunks,
+            "total_chunks": len(chunks),
             "created": datetime.now().isoformat()
         }
         save_kb(kb_name, kb_data)
@@ -92,7 +130,8 @@ async def upload_pdf(file: UploadFile = File(...)):
             "kb_name": kb_name,
             "filename": file.filename,
             "size_mb": kb_data["size_mb"],
-            "message": f"PDF '{file.filename}' uploaded ({kb_data['size_mb']} MB)"
+            "chunks": len(chunks),
+            "message": f"PDF '{file.filename}' uploaded ({kb_data['size_mb']} MB, {len(chunks)} chunks)"
         })
     except Exception as e:
         return JSONResponse({
@@ -105,27 +144,48 @@ async def list_knowledge_bases():
     kbs = [f.stem for f in KB_DIR.glob("*.json")]
     return JSONResponse({"kbs": kbs})
 
+def get_relevant_chunks(kb_data: dict, query: str, top_k: int = 3) -> list:
+    """Simple keyword-based retrieval"""
+    chunks = kb_data.get("chunks", [])
+    if not chunks:
+        return []
+    query_words = set(query.lower().split())
+    scored = []
+    for chunk in chunks:
+        chunk_words = set(chunk.lower().split())
+        score = len(query_words & chunk_words)
+        scored.append((score, chunk))
+    scored.sort(reverse=True)
+    return [chunk for _, chunk in scored[:top_k]]
+
 @app.post("/api/chat")
 async def chat_with_kb(
     message: str = Form(...),
     kb_name: str = Form(...),
     capability: str = Form("chat")
 ):
-    """Chat with AI (no PDF context in light version)"""
+    """Chat with AI using PDF context"""
     kb_data = load_kb(kb_name)
     
-    # Build prompt based on capability
-    if capability == "deep_solve":
-        system_prompt = """You are a helpful tutor. Solve problems step by step.
-Show your reasoning clearly. If this is a math problem, show all steps."""
-    elif capability == "deep_research":
-        system_prompt = """You are a research assistant. Give comprehensive answers with examples."""
-    else:
-        system_prompt = """You are a helpful tutor. Answer questions clearly and helpfully.
-You can reference that the user has uploaded a PDF for context, but work with general knowledge."""
+    # Get relevant context from PDF
+    relevant_chunks = get_relevant_chunks(kb_data, message, top_k=3)
+    context = "\n\n---\n\n".join(relevant_chunks) if relevant_chunks else "No PDF context available."
     
-    user_context = f"User uploaded PDF: {kb_data.get('filename', 'Unknown')}. " if kb_data.get('filename') else ""
-    full_prompt = f"{user_context}Question: {message}"
+    if capability == "deep_solve":
+        system_prompt = """You are a helpful tutor. Use the provided PDF context to solve problems step by step.
+Break down complex problems clearly."""
+    elif capability == "deep_research":
+        system_prompt = """You are a research assistant. Use the provided PDF context for comprehensive answers."""
+    else:
+        system_prompt = """You are a helpful tutor. Answer based on the provided PDF context.
+If context is insufficient, say so clearly."""
+    
+    full_prompt = f"""PDF Context:
+{context}
+
+User Question: {message}
+
+Answer based on the context above:"""
     
     if not client:
         return JSONResponse({
@@ -148,7 +208,7 @@ You can reference that the user has uploaded a PDF for context, but work with ge
         return JSONResponse({
             "success": True,
             "response": answer,
-            "pdf_context": kb_data.get('filename', '')
+            "context_used": len(relevant_chunks)
         })
     except Exception as e:
         return JSONResponse({
