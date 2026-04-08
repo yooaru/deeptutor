@@ -38,14 +38,16 @@ goto http://localhost:8001
 
 ## DeepTutor Integration
 
-App ini menggunakan `deeptutor` CLI untuk:
-- Knowledge base management
-- RAG (Retrieval Augmented Generation)
-- Deep solve & quiz generation
+App menggunakan RAG sederhana dengan:
+- PyMuPDF untuk extract text dari PDF
+- Keyword-based retrieval
+- OpenAI API untuk chat & quiz generation
 
-Pastikan DeepTutor sudah terinstall:
-```bash
-pip install deeptutor
+Setup environment variables di Render:
+```
+OPENAI_API_KEY=your_api_key
+OPENAI_BASE_URL=https://api.openai.com/v1  # atau OpenRouter, dll
+OPENAI_MODEL=gpt-4o-mini
 ```
 
 ## License
