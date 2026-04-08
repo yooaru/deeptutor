@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-import fitz  # PyMuPDF
+import pdfplumber
 from PIL import Image
 import openai
 
@@ -65,12 +65,13 @@ def save_kb(kb_name: str, data: dict):
         json.dump(data, f, indent=2)
 
 def extract_text_from_pdf(pdf_path: Path) -> str:
-    """Extract text from PDF using PyMuPDF"""
-    doc = fitz.open(pdf_path)
+    """Extract text from PDF using pdfplumber"""
     text_parts = []
-    for page in doc:
-        text_parts.append(page.get_text())
-    doc.close()
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                text_parts.append(text)
     return "\n".join(text_parts)
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list:
