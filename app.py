@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
 """
-PDF Tutor - DeepTutor Web Interface
-Upload PDF and learn with AI tutor
+PDF Tutor - Deep Learning Web Interface
+Upload PDF and learn with AI tutor (using OpenAI/compatible API)
 """
 
 import os
-import subprocess
 import json
 import shutil
+import base64
+import io
 from pathlib import Path
+from typing import Optional
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import fitz  # PyMuPDF
+from PIL import Image
+import openai
 
-app = FastAPI(title="PDF Tutor", description="Learn from PDF with DeepTutor")
+app = FastAPI(title="PDF Tutor", description="Learn from PDF with AI Tutor")
 
-# CORS untuk development
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,30 +30,76 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Paths
+# Config
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+KB_DIR = Path("knowledge_bases")
+KB_DIR.mkdir(exist_ok=True)
+
+# OpenAI config (can be any OpenAI-compatible API)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+if OPENAI_API_KEY:
+    client = openai.OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+else:
+    client = None
 
 # Static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Knowledge base storage (simple JSON-based)
+def get_kb_path(kb_name: str) -> Path:
+    return KB_DIR / f"{kb_name}.json"
 
-def run_deeptutor(cmd: list) -> tuple:
-    """Run deeptutor CLI command and return (stdout, stderr, returncode)"""
-    try:
-        result = subprocess.run(
-            ["deeptutor"] + cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd="/home/ubuntu/.openclaw/workspace"
-        )
-        return result.stdout, result.stderr, result.returncode
-    except subprocess.TimeoutExpired:
-        return "", "Timeout", 1
-    except Exception as e:
-        return "", str(e), 1
+def load_kb(kb_name: str) -> dict:
+    kb_path = get_kb_path(kb_name)
+    if kb_path.exists():
+        with open(kb_path) as f:
+            return json.load(f)
+    return {"name": kb_name, "documents": [], "chunks": []}
 
+def save_kb(kb_name: str, data: dict):
+    with open(get_kb_path(kb_name), "w") as f:
+        json.dump(data, f, indent=2)
+
+def extract_text_from_pdf(pdf_path: Path) -> str:
+    """Extract text from PDF using PyMuPDF"""
+    doc = fitz.open(pdf_path)
+    text_parts = []
+    for page in doc:
+        text_parts.append(page.get_text())
+    doc.close()
+    return "\n".join(text_parts)
+
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list:
+    """Simple text chunking for RAG"""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        chunk = text[start:end]
+        chunks.append(chunk)
+        start = end - overlap
+    return chunks
+
+def get_relevant_chunks(kb_data: dict, query: str, top_k: int = 3) -> list:
+    """Simple keyword-based retrieval (can be upgraded to embeddings)"""
+    chunks = kb_data.get("chunks", [])
+    if not chunks:
+        return []
+    
+    # Simple scoring based on keyword overlap
+    query_words = set(query.lower().split())
+    scored = []
+    for chunk in chunks:
+        chunk_words = set(chunk.lower().split())
+        score = len(query_words & chunk_words)
+        scored.append((score, chunk))
+    
+    scored.sort(reverse=True)
+    return [chunk for _, chunk in scored[:top_k]]
 
 @app.get("/")
 async def root():
@@ -61,54 +112,45 @@ async def upload_pdf(file: UploadFile = File(...)):
     if not file.filename.endswith('.pdf'):
         raise HTTPException(400, "Only PDF files allowed")
     
-    # Save file
     kb_name = file.filename.replace('.pdf', '').replace(' ', '_').lower()
     file_path = UPLOAD_DIR / f"{kb_name}.pdf"
     
+    # Save file
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
     
-    # Create knowledge base with DeepTutor
-    stdout, stderr, rc = run_deeptutor([
-        "kb", "create", kb_name,
-        "--doc", str(file_path)
-    ])
-    
-    if rc != 0 and "already exists" not in stderr:
-        # Try to add if already exists
-        stdout2, stderr2, rc2 = run_deeptutor([
-            "kb", "add", kb_name,
-            "--doc", str(file_path)
-        ])
-        if rc2 != 0:
-            return JSONResponse({
-                "success": False,
-                "error": stderr or stderr2,
-                "kb_name": kb_name
-            })
-    
-    return JSONResponse({
-        "success": True,
-        "kb_name": kb_name,
-        "filename": file.filename,
-        "message": f"Knowledge base '{kb_name}' created"
-    })
+    # Extract text and create KB
+    try:
+        text = extract_text_from_pdf(file_path)
+        chunks = chunk_text(text)
+        
+        kb_data = {
+            "name": kb_name,
+            "filename": file.filename,
+            "documents": [{"path": str(file_path), "text": text[:5000]}],  # Preview only
+            "chunks": chunks,
+            "total_chunks": len(chunks)
+        }
+        save_kb(kb_name, kb_data)
+        
+        return JSONResponse({
+            "success": True,
+            "kb_name": kb_name,
+            "filename": file.filename,
+            "message": f"Knowledge base '{kb_name}' created with {len(chunks)} chunks",
+            "preview": text[:500] + "..." if len(text) > 500 else text
+        })
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
 
 
 @app.get("/api/kb/list")
 async def list_knowledge_bases():
     """List all knowledge bases"""
-    stdout, stderr, rc = run_deeptutor(["kb", "list"])
-    
-    if rc != 0:
-        return JSONResponse({"kbs": [], "error": stderr})
-    
-    # Parse output
-    kbs = []
-    for line in stdout.strip().split('\n'):
-        if line and not line.startswith('-'):
-            kbs.append(line.strip())
-    
+    kbs = [f.stem for f in KB_DIR.glob("*.json")]
     return JSONResponse({"kbs": kbs})
 
 
@@ -118,54 +160,59 @@ async def chat_with_kb(
     kb_name: str = Form(...),
     capability: str = Form("chat")
 ):
-    """Chat with knowledge base"""
-    # Use deeptutor run with the knowledge base
-    stdout, stderr, rc = run_deeptutor([
-        "run", capability, message,
-        "--kb", kb_name,
-        "--tool", "rag",
-        "--format", "json"
-    ])
+    """Chat with knowledge base using RAG"""
+    kb_data = load_kb(kb_name)
     
-    if rc != 0:
+    if not kb_data.get("chunks"):
         return JSONResponse({
             "success": False,
-            "error": stderr or stdout
+            "error": "Knowledge base is empty"
         })
     
-    # Try to parse JSON response
-    try:
-        response_data = json.loads(stdout)
-        return JSONResponse({
-            "success": True,
-            "response": response_data.get("response", stdout),
-            "raw": stdout
-        })
-    except json.JSONDecodeError:
-        return JSONResponse({
-            "success": True,
-            "response": stdout,
-            "raw": stdout
-        })
+    # Get relevant context
+    relevant_chunks = get_relevant_chunks(kb_data, message, top_k=3)
+    context = "\n\n---\n\n".join(relevant_chunks) if relevant_chunks else "No relevant context found."
+    
+    # Prepare system prompt based on capability
+    if capability == "deep_solve":
+        system_prompt = """You are a helpful tutor. Use the provided context to help solve problems step by step.
+Break down complex problems into manageable steps. Show your reasoning clearly."""
+    elif capability == "deep_research":
+        system_prompt = """You are a research assistant. Use the provided context to give comprehensive answers.
+Cite relevant sections from the context when possible."""
+    else:
+        system_prompt = """You are a helpful tutor. Answer questions based on the provided context.
+If the context doesn't contain relevant information, say so clearly."""
+    
+    full_prompt = f"""Context from knowledge base:
+{context}
 
+User question: {message}
 
-@app.post("/api/solve")
-async def deep_solve(
-    problem: str = Form(...),
-    kb_name: str = Form(None),
-    image: UploadFile = File(None)
-):
-    """Deep solve a problem (text or image)"""
-    cmd = ["run", "deep_solve", problem, "--tool", "reason"]
+Please answer based on the context provided."""
     
-    if kb_name:
-        cmd.extend(["--kb", kb_name, "--tool", "rag"])
-    
-    stdout, stderr, rc = run_deeptutor(cmd)
+    # Call LLM if available
+    if client:
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": full_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            answer = response.choices[0].message.content
+        except Exception as e:
+            answer = f"Error calling LLM: {str(e)}\n\nContext retrieved:\n{context[:1000]}"
+    else:
+        answer = f"No LLM configured. Retrieved context:\n\n{context[:1500]}"
     
     return JSONResponse({
-        "success": rc == 0,
-        "solution": stdout if rc == 0 else stderr
+        "success": True,
+        "response": answer,
+        "context_used": len(relevant_chunks)
     })
 
 
@@ -176,29 +223,66 @@ async def generate_quiz(
     num_questions: int = Form(5)
 ):
     """Generate quiz from knowledge base"""
-    stdout, stderr, rc = run_deeptutor([
-        "run", "deep_question", topic,
-        "--kb", kb_name,
-        "--config", f"num_questions={num_questions}",
-        "--tool", "rag"
-    ])
+    kb_data = load_kb(kb_name)
     
-    return JSONResponse({
-        "success": rc == 0,
-        "quiz": stdout if rc == 0 else stderr
-    })
+    if not client:
+        return JSONResponse({
+            "success": False,
+            "quiz": "LLM not configured. Please set OPENAI_API_KEY environment variable."
+        })
+    
+    # Get relevant context for the topic
+    relevant_chunks = get_relevant_chunks(kb_data, topic, top_k=5)
+    context = "\n\n---\n\n".join(relevant_chunks) if relevant_chunks else ""
+    
+    prompt = f"""Based on the following context, generate {num_questions} quiz questions about "{topic}".
+Make the questions challenging but fair. Include multiple choice answers where appropriate.
+
+Context:
+{context}
+
+Generate the quiz now:"""
+    
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a quiz generator. Create clear, educational questions."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.8,
+            max_tokens=2500
+        )
+        quiz = response.choices[0].message.content
+        
+        return JSONResponse({
+            "success": True,
+            "quiz": quiz
+        })
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "quiz": f"Error generating quiz: {str(e)}"
+        })
 
 
 @app.delete("/api/kb/{kb_name}")
 async def delete_kb(kb_name: str):
     """Delete knowledge base"""
-    stdout, stderr, rc = run_deeptutor(["kb", "delete", kb_name, "--force"])
+    kb_path = get_kb_path(kb_name)
+    pdf_path = UPLOAD_DIR / f"{kb_name}.pdf"
+    
+    if kb_path.exists():
+        kb_path.unlink()
+    if pdf_path.exists():
+        pdf_path.unlink()
     
     return JSONResponse({
-        "success": rc == 0,
-        "message": stdout if rc == 0 else stderr
+        "success": True,
+        "message": f"Knowledge base '{kb_name}' deleted"
     })
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    port = int(os.getenv("PORT", 8001))
+    uvicorn.run(app, host="0.0.0.0", port=port)

@@ -3,4 +3,5 @@ uvicorn
 python-multipart
 pymupdf
 pillow
-deeptutor
+openai
+requests
