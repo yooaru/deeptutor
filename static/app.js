@@ -56,6 +56,12 @@ async function uploadFile(file) {
             method: 'POST',
             body: formData
         });
+        
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Server error ${res.status}: ${text.substring(0, 100)}`);
+        }
+        
         const data = await res.json();
         
         if (data.success) {
@@ -63,12 +69,13 @@ async function uploadFile(file) {
             status.className = 'success';
             loadKBs();
         } else {
-            status.textContent = `❌ Error: ${data.error}`;
+            status.textContent = `❌ Error: ${data.error || 'Unknown error'}`;
             status.className = 'error';
         }
     } catch (err) {
-        status.textContent = `❌ Error: ${err.message}`;
+        status.textContent = `❌ Error: ${err.message || 'Failed to upload'}`;
         status.className = 'error';
+        console.error('Upload error:', err);
     }
 }
 
