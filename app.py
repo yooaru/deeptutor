@@ -16,7 +16,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-import pdfplumber
+try:
+    import pdfplumber
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+    print("WARNING: pdfplumber not available")
+
 from PIL import Image
 import openai
 
@@ -66,6 +72,9 @@ def save_kb(kb_name: str, data: dict):
 
 def extract_text_from_pdf(pdf_path: Path) -> str:
     """Extract text from PDF using pdfplumber"""
+    if not PDF_AVAILABLE:
+        # Fallback: return placeholder text
+        return f"[PDF uploaded: {pdf_path.name}. Text extraction not available in this deployment.]"
     text_parts = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
